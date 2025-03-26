@@ -3,6 +3,8 @@ import requests
 from bs4 import BeautifulSoup
 import re
 from flask_cors import CORS
+from datetime import datetime, timedelta, timezone
+import pytz
 
 app = Flask(__name__)
 CORS(app)  # This enables CORS for all routes
@@ -148,9 +150,7 @@ def live_matches():
 @app.route('/ipl-schedule/<int:year>/<int:series_id>', methods=['GET'])
 def get_ipl_schedule(year, series_id):
     try:
-        # Dynamic URL based on year and series_id
         url = f"https://www.cricbuzz.com/cricket-series/{series_id}/indian-premier-league-{year}/matches"
-        
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36'
         }
@@ -161,73 +161,110 @@ def get_ipl_schedule(year, series_id):
             return jsonify({"error": f"Failed to fetch data from Cricbuzz for IPL {year}"}), 500
         
         soup = BeautifulSoup(response.text, 'html.parser')
-        
         matches = []
         
-        # Find all match rows - these are in table-like format on Cricbuzz
-        match_rows = soup.select('div.cb-series-matches > div')
+        # Create IST timezone (UTC+5:30)
+        ist_timezone = timezone(timedelta(hours=5, minutes=30))
         
-        current_date = None
-        
-        for row in match_rows:
-            # Check if this is a date header
-            if 'cb-series-matches-head' in row.get('class', []):
-                current_date = row.text.strip()
-                continue
-            
-            # Extract match details - each match has team names, venue and time
-            match_details = row.select_one('div[class*="cb-col-60"]')
-            venue_details = row.select_one('div[class*="cb-col-40"]')
-            
-            if not match_details or not venue_details:
-                continue
+        for row in soup.select('div.cb-col-100.cb-col.cb-series-brdr'):
+            try:
+                date_div = row.select_one('div.cb-col-25 span')
+                match_div = row.select_one('div.cb-col-60')
+                time_div = row.select_one('div.cb-col-40')
                 
-            match_title = match_details.text.strip()
-            venue_text = venue_details.text.strip()
-            
-            # Extract match time and status
-            match_time_div = row.select_one('div.cb-col-100')
-            match_time = match_time_div.text.strip() if match_time_div else "Time not available"
-            
-            # Parse team names and match number from title
-            match_info = match_title.split(',')
-            if len(match_info) >= 2:
-                teams = match_info[0].split(' vs ')
-                team1 = teams[0].strip() if len(teams) > 0 else "Team 1 not available"
-                team2 = teams[1].strip() if len(teams) > 1 else "Team 2 not available"
-                match_number = match_info[1].strip()
-            else:
-                team1 = "Team 1 not available"
-                team2 = "Team 2 not available"
-                match_number = ""
-            
-            # Check match status
-            result_div = row.select_one('div.cb-text-complete')
-            result = result_div.text.strip() if result_div else None
-            
-            # Find if match is live
-            live_div = row.select_one('div.cb-text-live')
-            is_live = True if live_div else False
-            
-            # Determine match status
-            if result:
-                status = "Completed"
-            elif is_live:
-                status = "Live"
-            else:
-                status = "Upcoming"
-            
-            matches.append({
-                "date": current_date,
-                "match_number": match_number,
-                "team1": team1,
-                "team2": team2,
-                "venue": venue_text,
-                "match_time": match_time,
-                "result": result,
-                "status": status,
-                "is_live": is_live
-            })
+                if not all([date_div, match_div, time_div]):
+                    continue
+                
+                date = date_div.text.strip()  # e.g., "Mar 26, Wed"
+                
+                # Extract match details
+                match_link_elem = match_div.select_one('a')
+                if not match_link_elem:
+                    continue
+                    
+                match_link = match_link_elem['href']
+                match_title = match_link_elem.select_one('span').text.strip()
+                
+                # Parse teams and match number
+                if ' vs ' in match_title and ', ' in match_title:
+                    teams_part, match_number = match_title.rsplit(', ', 1)
+                    team1, team2 = teams_part.split(' vs ', 1)
+                else:
+                    team1, team2, match_number = "Unknown", "Unknown", match_title
+                
+                venue = match_div.select_one('div.text-gray').text.strip()
+                
+                # Determine match status
+                status_elem = match_div.select_one('a.cb-text-complete, a.cb-text-live, a.cb-text-preview, a.cb-text-drink')
+                status_text = status_elem.text.strip() if status_elem else "Upcoming"
+                
+                if "won by" in status_text:
+                    status = "Completed"
+                    result = status_text
+                elif status_text == "Strategic Timeout" or "live" in status_text.lower():
+                    status = "Live"
+                    result = None
+                else:
+                    status = "Upcoming"
+                    result = None
+                
+                # Extract match time
+                match_time = time_div.select_one('span.schedule-date').text.strip()  # e.g., "7:30 PM"
+                
+                # Parse date and time
+                try:
+                    # Extract timestamp if available
+                    timestamp_elem = time_div.select_one('span.schedule-date')
+                    if timestamp_elem and 'timestamp' in timestamp_elem.attrs:
+                        timestamp_ms = int(timestamp_elem['timestamp'])
+                        match_datetime = datetime.fromtimestamp(timestamp_ms/1000, tz=ist_timezone)
+                    else:
+                        # Manual parsing as fallback
+                        date_parts = date.split(", ")[0]  # Get "Mar 26" from "Mar 26, Wed"
+                        date_str = f"{date_parts} {year}"  # Create "Mar 26 2025"
+                        
+                        # Parse date
+                        match_date = datetime.strptime(date_str, "%b %d %Y")
+                        
+                        # Parse time
+                        time_obj = datetime.strptime(match_time, "%I:%M %p")
+                        
+                        # Combine date and time
+                        match_datetime = datetime(
+                            year=match_date.year,
+                            month=match_date.month,
+                            day=match_date.day,
+                            hour=time_obj.hour,
+                            minute=time_obj.minute,
+                            tzinfo=ist_timezone
+                        )
+                    
+                    formatted_date_time = match_datetime.isoformat()
+                except Exception as e:
+                    formatted_date_time = f"{date} {match_time}"
+                
+                # Extract GMT time
+                time_details = time_div.select_one('div.cb-font-12')
+                gmt_time = time_details.text.strip().split('/')[0].strip() if time_details else "GMT time not available"
+                
+                matches.append({
+                    "date": date,
+                    "match_number": match_number,
+                    "team1": team1,
+                    "team2": team2,
+                    "venue": venue,
+                    "match_time": match_time,
+                    "gmt_time": gmt_time,
+                    "formatted_date_time": formatted_date_time,
+                    "status": status,
+                    "is_live": status == "Live",
+                    "result": result,
+                    "match_link": f"https://www.cricbuzz.com{match_link}"
+                })
+            except Exception as e:
+                # Log the error but continue processing other matches
+                print(f"Error processing match: {str(e)}")
+                continue
         
         return jsonify({
             "season": year,
@@ -237,7 +274,6 @@ def get_ipl_schedule(year, series_id):
     
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 
 @app.route('/all-series', methods=['GET'])
 def all_series():
