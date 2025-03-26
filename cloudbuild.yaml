@@ -1,0 +1,19 @@
+steps:
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['build', '-t', 'gcr.io/gen-lang-client-0981591737/cricket-api:$COMMIT_SHA', '.']
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['push', 'gcr.io/gen-lang-client-0981591737/cricket-api:$COMMIT_SHA']
+- name: 'gcr.io/google-cloud-sdk/cloud-sdk'
+  entrypoint: gcloud
+  args:
+  - 'run'
+  - 'deploy'
+  - 'cricket-api'
+  - '--image'
+  - 'gcr.io/gen-lang-client-0981591737/cricket-api:$COMMIT_SHA'
+  - '--region'
+  - 'asia-south1' # Replace with your Cloud Run region
+  - '--platform'
+  - 'managed'
+images:
+- 'gcr.io/gen-lang-client-0981591737/cricket-api:$COMMIT_SHA'
