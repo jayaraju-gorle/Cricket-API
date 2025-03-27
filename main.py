@@ -5,6 +5,7 @@ import re
 from flask_cors import CORS
 from datetime import datetime, timedelta, timezone
 import pytz
+import time
 
 app = Flask(__name__)
 CORS(app)
@@ -361,6 +362,231 @@ def get_ipl_schedule(year, series_id):
     
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+# Cache to store points table data
+points_table_cache = {"data": None, "timestamp": 0}
+CACHE_DURATION = 3600  # Cache for 1 hour
+
+def scrape_points_table():
+    """
+    Scrapes the IPL 2025 points table from Cricbuzz and returns a list of team data.
+    
+    Returns:
+        list: List of dictionaries containing team position, name, matches, wins, losses,
+              ties, no results, points, and net run rate. Returns an error dict if scraping fails.
+    """
+    # Define the URL and headers to mimic a browser request
+    url = "https://www.cricbuzz.com/cricket-series/9237/indian-premier-league-2025/points-table"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
+    # Fetch the page
+    try:
+        response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+            return {"error": f"Failed to fetch page, status code: {response.status_code}"}
+    except requests.RequestException as e:
+        return {"error": f"Request failed: {str(e)}"}
+
+    # Parse the HTML
+    soup = BeautifulSoup(response.content, "html.parser")
+
+    # Find the points table (assuming class 'cb-srs-pnts')
+    table = soup.find("table", class_="cb-srs-pnts")
+    # print(table.prettify())
+    if not table:
+        return {"error": "Points table not found on the page"}
+
+    # Initialize the result list and position counter
+    points_data = []
+    position = 1
+
+    # Process each row in the table
+    for row in table.find_all("tr"):
+        tds = row.find_all("td")
+        # Check if this is a team data row (9 <td> elements)
+        if len(tds) == 9:
+            try:
+                # Extract team name from the first <td>
+                team_div = tds[0].find("div", class_="cb-col cb-col-84")
+                if not team_div:
+                    continue  # Skip if team name div is missing
+                team_name = team_div.text.strip()
+
+                # Extract stats with safe conversion
+                def safe_int(text):
+                    try:
+                        return int(text.strip())
+                    except (ValueError, AttributeError):
+                        return 0
+
+                def safe_str(text):
+                    return text.strip() if text else "N/A"
+
+                matches = safe_int(tds[1].text)
+                wins = safe_int(tds[2].text)
+                losses = safe_int(tds[3].text)
+                ties = safe_int(tds[4].text)
+                no_results = safe_int(tds[5].text)
+                points = safe_int(tds[6].text)
+                nrr = safe_str(tds[7].text)
+
+                # Compile team data
+                team_data = {
+                    "position": position,
+                    "team": team_name,
+                    "matches": matches,
+                    "wins": wins,
+                    "losses": losses,
+                    "ties": ties,
+                    "no_results": no_results,
+                    "points": points,
+                    "nrr": nrr
+                }
+                points_data.append(team_data)
+                position += 1
+            except Exception as e:
+                # Log error and continue to next row
+                print(f"Error processing row for position {position}: {str(e)}")
+                continue
+
+    return points_data if points_data else {"error": "No team data extracted"}
+
+@app.route('/ipl/2025/points-table', methods=['GET'])
+def get_points_table():
+    """
+    API endpoint to get the IPL 2025 points table.
+    """
+    current_time = time.time()
+    
+    # Check cache
+    if (points_table_cache["data"] and 
+        (current_time - points_table_cache["timestamp"]) < CACHE_DURATION):
+        return jsonify(points_table_cache["data"])
+    
+    # Scrape fresh data
+    data = scrape_points_table()
+    if "error" in data:
+        return jsonify(data), 500
+    
+    # Update cache
+    points_table_cache["data"] = data
+    points_table_cache["timestamp"] = current_time
+    
+    return jsonify(data)
+
+def scrape_detailed_points_table():
+    """
+    Scrapes the IPL 2025 detailed points table from Cricbuzz, including match details for each team.
+    
+    Returns:
+        list: List of dictionaries containing team position, name, matches, wins, losses,
+              ties, no results, points, net run rate, and match details.
+        dict: Error message if scraping fails.
+    """
+    url = "https://www.cricbuzz.com/cricket-series/9237/indian-premier-league-2025/points-table"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
+    # Fetch the webpage
+    try:
+        response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+            return {"error": f"Failed to fetch page, status code: {response.status_code}"}
+    except requests.RequestException as e:
+        return {"error": f"Request failed: {str(e)}"}
+
+    # Parse the HTML
+    soup = BeautifulSoup(response.content, "html.parser")
+    table = soup.find("table", class_="cb-srs-pnts")
+    if not table:
+        return {"error": "Points table not found on the page"}
+
+    points_data = []
+    position = 1
+    rows = table.find_all("tr")
+
+    # Process rows to extract team data and match details
+    i = 0
+    while i < len(rows):
+        row = rows[i]
+        tds = row.find_all("td")
+
+        # Identify team rows (should have 9 <td> elements)
+        if len(tds) == 9:
+            try:
+                # Extract team name
+                team_div = tds[0].find("div", class_="cb-col cb-col-84")
+                team_name = team_div.text.strip() if team_div else "Unknown"
+
+                # Helper functions for safe data extraction
+                def safe_int(text):
+                    try:
+                        return int(text.strip())
+                    except (ValueError, AttributeError):
+                        return 0
+
+                def safe_str(text):
+                    return text.strip() if text else "N/A"
+
+                # Extract team standings
+                matches = safe_int(tds[1].text)
+                wins = safe_int(tds[2].text)
+                losses = safe_int(tds[3].text)
+                ties = safe_int(tds[4].text)
+                no_results = safe_int(tds[5].text)
+                points = safe_int(tds[6].text)
+                nrr = safe_str(tds[7].text)
+
+                # Look for the dropdown row with match details
+                match_details = []
+                i += 1  # Move to the next row
+                if i < len(rows):
+                    dropdown_row = rows[i]
+                    match_table = dropdown_row.find("table", class_="cb-srs-pnts-dwn-tbl")
+                    if match_table:
+                        for match_row in match_table.find_all("tr")[1:]:  # Skip header
+                            match_tds = match_row.find_all("td")
+                            if len(match_tds) == 4:
+                                opponent = safe_str(match_tds[0].text)
+                                description = safe_str(match_tds[1].text)
+                                date = safe_str(match_tds[2].text)
+                                result = safe_str(match_tds[3].text)
+                                match_details.append({
+                                    "opponent": opponent,
+                                    "description": description,
+                                    "date": date,
+                                    "result": result
+                                })
+
+                # Compile team data
+                team_data = {
+                    "position": position,
+                    "team": team_name,
+                    "matches": matches,
+                    "wins": wins,
+                    "losses": losses,
+                    "ties": ties,
+                    "no_results": no_results,
+                    "points": points,
+                    "nrr": nrr,
+                    "match_details": match_details
+                }
+                points_data.append(team_data)
+                position += 1
+            except Exception as e:
+                print(f"Error processing team row: {str(e)}")
+        i += 1  # Move to the next row
+
+    return points_data if points_data else {"error": "No team data extracted"}
+
+@app.route('/ipl/2025/detailed-points-table', methods=['GET'])
+def get_detailed_points_table():
+    """
+    API endpoint to get the detailed points table for IPL 2025, including match details.
+    """
+    data = scrape_detailed_points_table()
+    if "error" in data:
+        return jsonify(data), 500
+    return jsonify(data)
 
 if __name__ == "__main__":
     # Run with debug=True FOR DEVELOPMENT ONLY.
