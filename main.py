@@ -1,4 +1,4 @@
-from flask import Flask, jsonify
+from flask import Flask, jsonify, render_template
 import requests
 from bs4 import BeautifulSoup
 import re
@@ -10,14 +10,21 @@ import time
 app = Flask(__name__)
 CORS(app)
 
+if __name__ == "__main__":
+    # Run with debug=True FOR DEVELOPMENT ONLY.
+    app.run(host='0.0.0.0', port=8080, debug=True)
+
 @app.route('/')
 def index():
-    """Home page - lists API endpoints dynamically"""
-    endpoints = {}
+    """Home page - lists API endpoints dynamically as clickable links"""
+    endpoints = []
     for rule in app.url_map.iter_rules():
-        if rule.endpoint != 'static': # Exclude static routes
-            endpoints[str(rule)] = app.view_functions[rule.endpoint].__doc__ or 'No description available'
-    return jsonify(endpoints)
+        if rule.endpoint != 'static':  # Exclude static routes
+            endpoints.append({
+                'url': str(rule),
+                'description': app.view_functions[rule.endpoint].__doc__ or 'No description available'
+            })
+    return render_template('index.html', endpoints=endpoints)
 
 @app.route('/players/<player_name>', methods=['GET'])
 def get_player(player_name):
@@ -587,7 +594,3 @@ def get_detailed_points_table():
     if "error" in data:
         return jsonify(data), 500
     return jsonify(data)
-
-if __name__ == "__main__":
-    # Run with debug=True FOR DEVELOPMENT ONLY.
-    app.run(host='0.0.0.0', port=8080, debug=True)

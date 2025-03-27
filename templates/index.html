@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Cricket API Endpoints</title>
+</head>
+<body>
+    <h1>Welcome to the Cricket API</h1>
+    <p>Available endpoints:</p>
+    <ul>
+        {% for endpoint in endpoints %}
+        <li>
+            <a href="{{ endpoint.url }}">{{ endpoint.url }}</a>: {{ endpoint.description }}
+        </li>
+        {% endfor %}
+    </ul>
+</body>
+</html>
