@@ -7,148 +7,235 @@ from datetime import datetime, timedelta, timezone
 import pytz
 
 app = Flask(__name__)
-CORS(app)  # This enables CORS for all routes
+CORS(app)
 
 @app.route('/')
 def index():
-    return "Hey there! Welcome to the Cricket API"
+    """Home page - lists API endpoints dynamically"""
+    endpoints = {}
+    for rule in app.url_map.iter_rules():
+        if rule.endpoint != 'static': # Exclude static routes
+            endpoints[str(rule)] = app.view_functions[rule.endpoint].__doc__ or 'No description available'
+    return jsonify(endpoints)
 
 @app.route('/players/<player_name>', methods=['GET'])
 def get_player(player_name):
+    """Get player information"""
+    try:
+        source = requests.get(f"https://www.google.com/search?q={player_name}%20cricbuzz").text
+        page = BeautifulSoup(source, "lxml")
+        page_link_element = page.find("div", class_="kCrYT")
+        if not page_link_element or not page_link_element.find("a"):
+            return jsonify({"error": "Could not find player link from Google search"}), 404
+        link_suffix = page_link_element.find("a")["href"]
+        player_url = f"https://www.cricbuzz.com{link_suffix[6:]}"
 
-    source = requests.get(f"https://www.google.com/search?q={player_name}%20cricbuzz").text
+        cricbuzz_page = requests.get(player_url).text
+        cricbuzz_soup = BeautifulSoup(cricbuzz_page, "lxml")
 
-    page = BeautifulSoup(source, "lxml")
-    page = page.find("div",class_="kCrYT")
-    link = page.find("a", href=re.compile(r"[/]([a-z]|[A-Z])\w+")).attrs["href"]
-    c =  requests.get(link[7:]).text
-    cric = BeautifulSoup(c, "lxml")
+        profile = cricbuzz_soup.find("div", id="playerProfile")
+        if not profile:
+            return jsonify({"error": "Could not find player profile section on Cricbuzz"}), 404
+        pc = profile.find("div", class_="cb-col-100 cb-bg-white")
+        if not pc:
+            return jsonify({"error": "Could not find player info container"}), 404
 
-    profile = cric.find("div",id="playerProfile")
-    pc = profile.find("div",class_="cb-col cb-col-100 cb-bg-white")
+        name_element = pc.find("h1", class_="cb-font-40")
+        name = name_element.text.strip() if name_element else "N/A"
+        country_element = pc.find("h3", class_="cb-font-18 text-gray")
+        country = country_element.text.strip() if country_element else "N/A"
+        image_element = pc.find('img')
+        image_src = image_element['src'] if image_element and 'src' in image_element.attrs else "N/A"
 
-    #name country and image
-    name = pc.find("h1",class_="cb-font-40").text  #1
-    country = pc.find("h3",class_="cb-font-18 text-gray").text #2
-    images = pc.findAll('img')
-    for image in images:
-        i = image['src']    #3
+        personal_info = cricbuzz_soup.find_all("div", class_="cb-col cb-col-60 cb-lst-itm-sm")
+        role = personal_info[2].text.strip() if len(personal_info) > 2 else "N/A"
+        icc_rankings = cricbuzz_soup.find_all("div", class_="cb-col cb-col-25 cb-plyr-rank text-right")
 
-    #personal information and rankings
-    personal =cric.find_all("div",class_="cb-col cb-col-60 cb-lst-itm-sm")
-    role = personal[2].text.strip()  #5
-    icc = cric.find_all("div",class_="cb-col cb-col-25 cb-plyr-rank text-right")
-    tb = icc[0].text.strip()  #6
-    ob = icc[1].text.strip()  #7
-    twb = icc[2].text.strip() #8
+        rankings = {}
+        rank_categories = ["Test Batting", "ODI Batting", "T20 Batting", "Test Bowling", "ODI Bowling", "T20 Bowling"]
+        for i, category in enumerate(rank_categories):
+            rankings[category] = icc_rankings[i].text.strip() if len(icc_rankings) > i else "N/A"
 
-    tbw=icc[3].text.strip()  #9
-    obw=icc[4].text.strip()  #10
-    twbw=icc[5].text.strip() #11
+        summary_tables = cricbuzz_soup.find_all("div", class_="cb-plyr-tbl")
+        career_summary = []
+        if len(summary_tables) >= 2:
+            batting_table = summary_tables[0]
+            bowling_table = summary_tables[1]
+            categories = [td.text for td in batting_table.find_all("td", class_="cb-col-8")[:3]]
 
+            batting_stats = batting_table.find_all("td", class_="text-right")
+            batting_formats = ["Test", "ODI", "T20"]
+            batting_career = []
+            for i, format_name in enumerate(batting_formats):
+                start_index = i * 13
+                if len(batting_stats) > start_index + 12:
+                    batting_career.append({
+                        "Format": categories[i] if len(categories) > i else format_name,
+                        "Matches": batting_stats[start_index + 0].text, "Runs": batting_stats[start_index + 3].text,
+                        "HS": batting_stats[start_index + 4].text, "Avg": batting_stats[start_index + 5].text,
+                        "SR": batting_stats[start_index + 7].text, "100s": batting_stats[start_index + 8].text, "50s": batting_stats[start_index + 10].text
+                    })
+                else:
+                    batting_career.append({"Format": categories[i] if len(categories) > i else format_name, "Matches": "N/A", "Runs": "N/A", "HS": "N/A", "Avg": "N/A", "SR": "N/A", "100s": "N/A", "50s": "N/A"})
 
-    #summary of the stata
-    summary  = cric.find_all("div",class_="cb-plyr-tbl")
-    batting =summary[0]
-    bowling =summary[1]
-
-    cat = cric.find_all("td",class_="cb-col-8")
-
-
-    batstat = batting.find_all("td",class_="text-right")
-    #test
-    testmatches = batstat[0].text
-    testruns = batstat[3].text
-    tesths = batstat[4].text
-    testavg = batstat[5].text
-    testsr = batstat[7].text              
-    test100 = batstat[8].text
-    test50 = batstat[10].text
-
-    #odii
-    odimatches = batstat[13].text
-    odiruns = batstat[16].text
-    odihs = batstat[17].text
-    odiavg = batstat[18].text
-    odisr = batstat[20].text
-    odi100 = batstat[21].text      
-    odi50 = batstat[23].text
-
-    #t20
-    tmatches = batstat[26].text
-    truns = batstat[29].text
-    ths = batstat[30].text
-    tavg = batstat[31].text         
-    tsr = batstat[33].text
-    t100 = batstat[34].text
-    t50 = batstat[36].text
+            bowling_stats = bowling_table.find_all("td", class_="text-right")
+            bowling_formats = ["Test", "ODI", "T20"]
+            bowling_career = []
+            for i, format_name in enumerate(bowling_formats):
+                start_index = i * 13
+                if len(bowling_stats) > start_index + 12:
+                    bowling_career.append({
+                        "Format": categories[i] if len(categories) > i else format_name,
+                        "Balls": bowling_stats[start_index + 2].text, "Runs Conceded": bowling_stats[start_index + 3].text,
+                        "Wickets": bowling_stats[start_index + 4].text, "BBI": bowling_stats[start_index + 5].text, "BBM": bowling_stats[start_index + 6].text,
+                        "Economy": bowling_stats[start_index + 7].text, "5W": bowling_stats[start_index + 10].text
+                    })
+                else:
+                    bowling_career.append({"Format": categories[i] if len(categories) > i else format_name, "Balls": "N/A", "Runs Conceded": "N/A", "Wickets": "N/A", "BBI": "N/A", "BBM": "N/A", "Economy": "N/A", "5W": "N/A"})
 
 
-    bowstat = bowling.find_all("td",class_="text-right")
+            career_summary = {
+                "Batting Career Summary": batting_career,
+                "Bowling Career Summary": bowling_career
+            }
 
-    testballs = bowstat[2].text
-    testbruns = bowstat[3].text
-    testwickets = bowstat[4].text
-    testbbi = bowstat[5].text
-    testbbm = bowstat[6].text
-    testecon = bowstat[7].text
-    test5w = bowstat[10].text
+        player_data = {
+            "Player Name": name,
+            "Country": country,
+            "Role": role,
+            "Image Source": image_src,
+            "Rankings": rankings,
+            **career_summary
+        }
+        return jsonify(player_data)
 
-    odiballs = bowstat[14].text
-    odibruns = bowstat[15].text
-    odiwickets = bowstat[16].text
-    odibbi = bowstat[17].text
-    odiecon = bowstat[19].text
-    odi5w = bowstat[22].text
+    except requests.RequestException as e:
+        return jsonify({"error": f"Failed to fetch player data: {str(e)}"}), 500
+    except Exception as e:
+        return jsonify({"error": f"An unexpected error occurred: {str(e)}"}), 500
 
-    tballs = bowstat[26].text
-    tbruns = bowstat[27].text
-    twickets = bowstat[28].text
-    tbbi = bowstat[29].text
-    tecon = bowstat[31].text
-    t5w = bowstat[34].text
 
-    data1 = [ {"Player Name": name, "Country": country , "Role":  role , "Batting Career Summary 1": { "Mode1": cat[0].text, "Matches": testmatches, "Runs": testruns ,"HS": tesths, "Avg": testavg ,"SR":testsr ,"100s": test100 ,"50s": test50 }}]
-    data2 = [ { "Batting Career Summary2": { "Mode2": cat[1].text, "Matches": odimatches, "Runs": odiruns ,"HS": odihs, "Avg": odiavg ,"SR":odisr ,"100s": odi100 ,"50s": odi50}}]
-    data3 = [ { "Batting Career Summary3": { "Mode2": cat[1].text, "Matches": tmatches, "Runs": truns ,"HS": ths, "Avg": tavg ,"SR":tsr ,"100s": t100 ,"50s": t50}}]
-    data4 = [ { "Bowling Career Summary1": { "Mode3": cat[2].text, "Matches": testballs, "Runs": testbruns ,"Wickets": testwickets, "BBI": testbbi, "BBM": testbbm, "Econ": testecon, "5W": test5w}}]
-    data5 = [ { "Bowling Career Summary2": { "Mode3": cat[2].text, "Matches": odiballs, "Runs": odibruns ,"Wickets": odiwickets, "BBI": odibbi, "BBM": odiecon, "Econ": odiecon, "5W": odi5w}}]
-    data6 = [ { "Bowling Career Summary3": { "Mode3": cat[2].text, "Matches": tballs, "Runs": tbruns ,"Wickets": twickets, "BBI": tbbi, "BBM": tecon, "Econ": tecon, "5W": t5w}}]
-    return jsonify (data1, data2, data3, data4, data5, data6) 
-        
 @app.route('/schedule')
 def schedule():
-    link = f"https://www.cricbuzz.com/cricket-schedule/upcoming-series/international"
-    source = requests.get(link).text
-    page = BeautifulSoup(source, "lxml")
-    page = page.find_all("div",class_="cb-col-100 cb-col")
-    first = page[0].find_all("div",class_="cb-col-100 cb-col")
-    matches = []
-    for i in range(len(first)):
-        matches.append(first[i].text)
-    
-    
-    return jsonify(matches)
+    """Get upcoming match schedules"""
+    try:
+        schedule_url = "https://www.cricbuzz.com/cricket-schedule/upcoming-series/international"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        response = requests.get(schedule_url, headers=headers)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.content, 'lxml')
+
+        schedule_div = soup.find('div', class_='cb-sched-tabs')
+        if not schedule_div:
+            return jsonify({"error": "Could not find schedule section"}), 404
+
+        match_sections = schedule_div.find_all('div', class_='cb-col-100 cb-col cb-sch-lst')
+        if not match_sections:
+            return jsonify({"error": "No match sections found"}), 404
+
+        matches = []
+        for section in match_sections:
+            date_header = section.find_previous('h2', class_='cb-sch-day-header')
+            date = date_header.text.strip() if date_header else "Unknown Date"
+
+            match_items = section.find_all('div', class_='cb-col-100 cb-col')
+            for match_item in match_items:
+                if not match_item.text.strip():
+                    continue
+                match_text = match_item.text.strip()
+                if date != "Unknown Date":
+                    matches.append({
+                        "date": date,
+                        "match_details": match_text
+                    })
+                else:
+                    matches.append(match_text)
+
+        return jsonify(matches)
+
+    except requests.RequestException as e:
+        return jsonify({"error": f"Failed to fetch schedule: {str(e)}"}), 500
+    except Exception as e:
+        return jsonify({"error": f"An unexpected error occurred: {str(e)}"}), 500
 
 @app.route('/live')
 def live_matches():
-    link = f"https://www.cricbuzz.com/cricket-match/live-scores"
-    source = requests.get(link).text
-    page = BeautifulSoup(source, "lxml")
+    """Get live match scores"""
+    try:
+        link = "https://www.cricbuzz.com/cricket-match/live-scores"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        response = requests.get(link, headers=headers)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, 'lxml')
 
-    page = page.find("div",class_="cb-col cb-col-100 cb-bg-white")
-    matches = page.find_all("div",class_="cb-scr-wll-chvrn cb-lv-scrs-col")
+        live_score_div = soup.find("div", class_="cb-col cb-col-100 cb-bg-white")
+        if not live_score_div:
+            return jsonify({"error": "Could not find live matches section on the page"}), 404
 
-    live_matches = []
+        matches_divs = live_score_div.find_all("div", class_="cb-scr-wll-chvrn cb-lv-scrs-col")
+        live_matches_data = []
+        for match_div in matches_divs:
+            if match_div.text.strip():
+                live_matches_data.append(match_div.text.strip())
+        return jsonify(live_matches_data)
 
-    for i in range(len(matches)):
-        live_matches.append(matches[i].text)
-    
-    
-    return jsonify(live_matches)
+    except requests.RequestException as e:
+        return jsonify({"error": f"Failed to fetch live scores: {str(e)}"}), 500
+    except Exception as e:
+        return jsonify({"error": f"An unexpected error occurred: {str(e)}"}), 500
+
+@app.route('/all-series', methods=['GET'])
+def all_series():
+    """Get all cricket series"""
+    try:
+        url = "https://www.cricbuzz.com/cricket-schedule/series/all"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, 'lxml')
+
+        series_sections = soup.find_all('div', class_='cb-sch-lst')
+        if not series_sections:
+            return jsonify({"error": "No series found on the page"}), 404
+
+        all_series_data = []
+        for section in series_sections:
+            category_header = section.find_previous('h2', class_='cb-col-100 cb-sch-hdr')
+            category = category_header.text.strip() if category_header else "Unknown"
+            series_items = section.find_all('div', class_='cb-col-100 cb-col')
+            series_list = []
+            for series_item in series_items:
+                if not series_item.text.strip():
+                    continue
+                series_info = series_item.find('a')
+                if series_info and '/series/' in series_info['href']:
+                    series_name = series_info.text.strip()
+                    series_id_match = re.search(r'/series/(\d+)/', series_info['href'])
+                    series_id = series_id_match.group(1) if series_id_match else "N/A"
+                    series_list.append({
+                        "series_name": series_name,
+                        "series_id": series_id
+                    })
+            all_series_data.append({
+                "category": category,
+                "series": series_list
+            })
+        return jsonify(all_series_data)
+
+    except requests.RequestException as e:
+        return jsonify({"error": f"Failed to fetch series list: {str(e)}"}), 500
+    except Exception as e:
+        return jsonify({"error": f"An unexpected error occurred: {str(e)}"}), 500
 
 @app.route('/ipl-schedule/<int:year>/<int:series_id>', methods=['GET'])
 def get_ipl_schedule(year, series_id):
+    """Get IPL schedule for a given year and series"""
     try:
         url = f"https://www.cricbuzz.com/cricket-series/{series_id}/indian-premier-league-{year}/matches"
         headers = {
@@ -274,89 +361,6 @@ def get_ipl_schedule(year, series_id):
     
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-@app.route('/all-series', methods=['GET'])
-def all_series():
-    try:
-        # URL for all series schedules on Cricbuzz
-        url = "https://www.cricbuzz.com/cricket-schedule/series/all"
-        
-        # Fetch the webpage
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()  # Raise an error for bad status codes
-        
-        # Parse the HTML with BeautifulSoup
-        soup = BeautifulSoup(response.text, 'lxml')
-        
-        # Find all series containers
-        series_sections = soup.find_all('div', class_='cb-sch-lst')
-        
-        if not series_sections:
-            return jsonify({"error": "No series found on the page"}), 404
-        
-        # List to store all series data
-        all_series_data = []
-        
-        # Iterate through each series section (e.g., International, T20 Leagues, Domestic, Women)
-        for section in series_sections:
-            # Extract the category (e.g., "T20 Leagues")
-            category = section.find_previous('h2', class_='cb-col-100 cb-sch-hdr')
-            category = category.text.strip() if category else "Unknown Category"
-            
-            # Find all series within this category
-            series_blocks = section.find_all('div', class_='cb-col-100 cb-col')
-            
-            for series_block in series_blocks:
-                # Extract series name and date range
-                series_name = series_block.find('a', class_='text-hvr-underline')
-                series_name = series_name.text.strip() if series_name else "Unknown Series"
-                
-                date_range = series_block.find('div', class_='text-gray')
-                date_range = date_range.text.strip() if date_range else "TBD"
-                
-                # Find all matches within this series
-                match_blocks = series_block.find_all('div', class_='cb-col-100 cb-col')
-                matches = []
-                
-                for match_block in match_blocks:
-                    # Extract match details
-                    match_title = match_block.find('a', class_='text-hvr-underline')
-                    match_title = match_title.text.strip() if match_title else "TBD"
-                    
-                    date_time = match_block.find('div', class_='text-gray')
-                    date_time = date_time.text.strip() if date_time else "TBD"
-                    
-                    venue = match_block.find('div', class_='text-gray', string=lambda x: x and ',' in x)
-                    venue = venue.text.strip() if venue else "TBD"
-                    
-                    # Create a match object
-                    match = {
-                        "match_title": match_title,
-                        "date_time": date_time,
-                        "venue": venue
-                    }
-                    matches.append(match)
-                
-                # Create a series object
-                series = {
-                    "category": category,
-                    "series_name": series_name,
-                    "date_range": date_range,
-                    "matches": matches
-                }
-                all_series_data.append(series)
-        
-        # Return the list of series as JSON
-        return jsonify(all_series_data)
-    
-    except requests.RequestException as e:
-        return jsonify({"error": f"Failed to fetch series schedules: {str(e)}"}), 500
-    except Exception as e:
-        return jsonify({"error": f"An error occurred: {str(e)}"}), 500
-
 
 if __name__ == "__main__":
     # Run with debug=True FOR DEVELOPMENT ONLY.
