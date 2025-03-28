@@ -508,7 +508,7 @@ def get_ipl_schedule(year, series_id):
         # Create IST timezone (UTC+5:30)
         ist_timezone = timezone(timedelta(hours=5, minutes=30))
         
-        for row in soup.select('div.cb-col-100.cb-col.cb-series-brdr'):
+        for row in soup.select('div.cb-col-100.cb-col.cb-series-matches'):
             try:
                 date_div = row.select_one('div.cb-col-25 span')
                 match_div = row.select_one('div.cb-col-60')
